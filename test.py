@@ -1,121 +1,154 @@
 import sys
 import os
+import argparse
+from typing import List, Tuple
 
-# --- COULEURS (Codes ANSI standards pour Linux) ---
-# Pas besoin de librairie externe, c'est natif.
-C_RED     = "\033[91m"
-C_GREEN   = "\033[92m"
-C_YELLOW  = "\033[93m"
-C_BLUE    = "\033[94m"
-C_RESET   = "\033[0m"
+# --- CONFIGURATION VISUELLE ---
+class Colors:
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    RESET = "\033[0m"
 
-def print_log(type_log, message):
-    """Fonction utilitaire pour afficher des messages colorés."""
-    if type_log == "FAIL":
-        print(f"{C_RED}[FAIL] {message}{C_RESET}")
-    elif type_log == "WARN":
-        print(f"{C_YELLOW}[WARN] {message}{C_RESET}")
-    elif type_log == "OK":
-        print(f"{C_GREEN}[PASS] {message}{C_RESET}")
-    elif type_log == "INFO":
-        print(f"{C_BLUE}[INFO] {message}{C_RESET}")
+# --- LE COEUR DU PROGRAMME (MODULE) ---
+class DockerAuditor:
+    def __init__(self, target_path: str, verbose: bool = False):
+        self.target_path = target_path
+        self.verbose = verbose
+        self.files_scanned = 0
+        self.total_errors = 0
+        self.scanned_files_list = []
 
-# --- FONCTIONS DE VÉRIFICATION ---
+    def _log(self, level: str, message: str):
+        """Gestionnaire de logs centralisé."""
+        if level == "FAIL":
+            print(f"{Colors.RED}[FAIL] {message}{Colors.RESET}")
+        elif level == "WARN":
+            print(f"{Colors.YELLOW}[WARN] {message}{Colors.RESET}")
+        elif level == "OK":
+            if self.verbose: # On affiche les OK seulement si verbose est activé
+                print(f"{Colors.GREEN}[OK] {message}{Colors.RESET}")
+        elif level == "INFO":
+            print(f"{Colors.BLUE}[INFO] {message}{Colors.RESET}")
+        elif level == "DEBUG":
+            if self.verbose:
+                print(f"[DEBUG] {message}")
 
-def scan_dockerfile(lignes):
-    errors = 0
-    
-    # 1. Vérification de l'utilisateur (Ne pas être root)
-    user_found = False
-    for ligne in lignes:
-        if ligne.strip().upper().startswith("USER"):
-            user_found = True
-    
-    if user_found:
-        print_log("OK", "Instruction USER présente.")
-    else:
-        print_log("FAIL", "Aucun USER défini (Le conteneur tourne en root).")
-        errors += 1
+    def _check_line_skip(self, line: str) -> bool:
+        """Vérifie si la ligne doit être ignorée (commentaires ou # nosec)."""
+        line_clean = line.strip()
+        if not line_clean or line_clean.startswith("#"):
+            return True
+        if "# nosec" in line.lower():
+            return True
+        return False
 
-    # 2. Vérification des versions (Pas de latest)
-    latest_found = False
-    for ligne in lignes:
-        if ligne.strip().upper().startswith("FROM"):
-            if "latest" in ligne.lower() or ":" not in ligne:
-                latest_found = True
-                print_log("WARN", f"Tag 'latest' détecté : {ligne.strip()}")
-    
-    if not latest_found:
-        print_log("OK", "Image de base bien versionnée.")
-
-    return errors
-
-def scan_compose(lignes):
-    errors = 0
-    
-    # 1. Recherche de mots de passe en clair
-    keywords = ["PASSWORD", "SECRET", "KEY", "TOKEN"]
-    for i, ligne in enumerate(lignes):
-        ligne_clean = ligne.strip().upper()
-        # On ignore les commentaires
-        if ligne_clean.startswith("#"): continue
+    def _analyze_dockerfile(self, content: List[str]) -> int:
+        errors = 0
+        user_found = False
         
-        for key in keywords:
-            # On cherche motif "CLE: VALEUR" ou "CLE=VALEUR"
-            if key in ligne_clean and (":" in ligne or "=" in ligne):
-                print_log("FAIL", f"Secret potentiel (Ligne {i+1}) : {ligne.strip()}")
-                errors += 1
-                break # On ne flag pas 2 fois la même ligne
+        for i, line in enumerate(content):
+            if self._check_line_skip(line): continue
 
-    return errors
-
-# --- MOTEUR PRINCIPAL ---
-
-def main():
-    path = "."
-    if len(sys.argv) > 1:
-        path = sys.argv[1]
-    
-    print(f"{C_BLUE}--- DÉBUT DE L'AUDIT DE SÉCURITÉ ---{C_RESET}")
-    print(f"Dossier cible : {os.path.abspath(path)}\n")
-
-    files_scanned = 0
-    total_errors = 0
-
-    # On parcourt le dossier récursivement (os.walk)
-    for root, dirs, files in os.walk(path):
-        for file in files:
-            file_path = os.path.join(root, file)
-            filename = file.lower()
+            # Règle 1: USER
+            if line.strip().upper().startswith("USER"):
+                user_found = True
             
-            # On lit le fichier seulement si c'est un Dockerfile ou Compose
-            if filename == "dockerfile" or "docker-compose" in filename:
-                print(f"{C_BLUE}Analyse de : {file_path}{C_RESET}")
+            # Règle 2: Latest
+            if line.strip().upper().startswith("FROM"):
+                if "latest" in line.lower() or ":" not in line:
+                    self._log("WARN", f"Ligne {i+1}: Tag 'latest' ou manquant -> {line.strip()}")
+
+        if not user_found:
+            self._log("FAIL", "Aucun USER défini (Risque Root).")
+            errors += 1
+        else:
+            self._log("OK", "USER est bien défini.")
+
+        return errors
+
+    def _analyze_compose(self, content: List[str]) -> int:
+        errors = 0
+        keywords = ["PASSWORD", "SECRET", "KEY", "TOKEN", "MYSQL_ROOT_PASSWORD"]
+        
+        for i, line in enumerate(content):
+            if self._check_line_skip(line): continue
+
+            # Règle 3: Secrets en clair
+            line_upper = line.upper()
+            for key in keywords:
+                if key in line_upper and (":" in line or "=" in line):
+                    self._log("FAIL", f"Ligne {i+1}: Secret potentiel détecté -> {line.strip()}")
+                    errors += 1
+                    break
+        return errors
+
+    def run_scan(self):
+        """Lance le scan récursif."""
+        self._log("INFO", f"Démarrage de l'audit sur : {os.path.abspath(self.target_path)}")
+
+        if not os.path.exists(self.target_path):
+            self._log("FAIL", "Le dossier cible n'existe pas.")
+            return False
+
+        # Parcours du dossier
+        for root, _, files in os.walk(self.target_path):
+            for file in files:
+                file_lower = file.lower()
                 
-                try:
-                    with open(file_path, 'r') as f:
-                        content = f.readlines()
-                        
-                    if filename == "dockerfile":
-                        total_errors += scan_dockerfile(content)
-                    else:
-                        total_errors += scan_compose(content)
-                        
-                    files_scanned += 1
-                    print("-" * 40) # Séparateur visuel
+                # Détection des fichiers cibles
+                is_dockerfile = (file_lower == "dockerfile")
+                is_compose = ("docker-compose" in file_lower and file_lower.endswith((".yml", ".yaml")))
+
+                if is_dockerfile or is_compose:
+                    full_path = os.path.join(root, file)
+                    self._log("INFO", f"Analyse de : {full_path}")
                     
-                except Exception as e:
-                    print_log("FAIL", f"Impossible de lire le fichier : {e}")
+                    try:
+                        with open(full_path, 'r', encoding='utf-8') as f:
+                            content = f.readlines()
 
-    # Résumé final
-    print(f"\n{C_BLUE}--- RAPPORT TERMINÉ ---{C_RESET}")
-    print(f"Fichiers analysés : {files_scanned}")
-    if total_errors > 0:
-        print(f"{C_RED}Résultat : {total_errors} problèmes de sécurité trouvés.{C_RESET}")
-        sys.exit(1) # Code erreur pour la CI/CD
-    else:
-        print(f"{C_GREEN}Résultat : Tout semble correct.{C_RESET}")
-        sys.exit(0)
+                        file_errors = 0
+                        if is_dockerfile:
+                            file_errors = self._analyze_dockerfile(content)
+                        elif is_compose:
+                            file_errors = self._analyze_compose(content)
 
+                        self.total_errors += file_errors
+                        self.files_scanned += 1
+                        self.scanned_files_list.append(full_path)
+
+                    except Exception as e:
+                        self._log("FAIL", f"Erreur lecture fichier : {e}")
+
+        self._print_report()
+        return self.total_errors == 0 and self.files_scanned > 0
+
+    def _print_report(self):
+        """Affiche le résumé final."""
+        print("-" * 50)
+        if self.files_scanned == 0:
+            self._log("WARN", "Aucun fichier de configuration Docker trouvé !")
+            print(f"{Colors.YELLOW}Conseil : Vérifiez que vous êtes dans le bon dossier.{Colors.RESET}")
+        else:
+            print(f"Fichiers scannés : {self.files_scanned}")
+            if self.total_errors > 0:
+                print(f"{Colors.RED}RÉSULTAT : ÉCHEC ({self.total_errors} problèmes trouvés){Colors.RESET}")
+            else:
+                print(f"{Colors.GREEN}RÉSULTAT : SUCCÈS (Aucun problème critique){Colors.RESET}")
+
+# --- POINT D'ENTRÉE (CLI) ---
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Audit de sécurité Docker simple.")
+    parser.add_argument("path", nargs='?', default=".", help="Chemin du dossier à scanner")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Afficher les détails (debug)")
+    
+    args = parser.parse_args()
+
+    # Instanciation de la classe et lancement
+    auditor = DockerAuditor(args.path, verbose=args.verbose)
+    success = auditor.run_scan()
+
+    # Code de sortie pour CI/CD (0 = OK, 1 = Erreur)
+    sys.exit(0 if success else 1)
