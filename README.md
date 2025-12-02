@@ -23,3 +23,10 @@ Le scanner vérifie les règles suivantes :
 ```bash
 git clone [https://github.com/axel-g-dev/Scan_Docker.git](https://github.com/axel-g-dev/Scan_Docker.git)
 cd Scan_Docker
+```
+
+Puis 
+
+```python
+python3 test.py
+```
