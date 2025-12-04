@@ -25,7 +25,7 @@ git clone [https://github.com/axel-g-dev/Scan_Docker.git](https://github.com/axe
 cd Scan_Docker
 ```
 
-Puis 
+Ensuite 
 
 ```python
 python3 test.py
