@@ -1,6 +1,6 @@
 # Scan_Docker
 
-Un outil d'analyse statique de sécurité (SAST) pour les environnements Docker.
+Un outil d'analyse statique de sécurité pour les environnements Docker.
 
 Ce script Python analyse automatiquement les fichiers `Dockerfile` et `docker-compose.yml` pour détecter des mauvaises configurations de sécurité courantes avant le déploiement.
 
