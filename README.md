@@ -15,7 +15,8 @@ Le scanner vérifie les règles suivantes :
 
 ## Prérequis
 
-* Python 3.x
+* Python 3
+* 
 * Aucune dépendance externe requise (utilise uniquement la librairie standard).
 
 ## Installation
